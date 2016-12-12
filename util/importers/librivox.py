@@ -44,19 +44,18 @@ class DataSets(object):
         return self._test
 
 class DataSet(object):
-    def __init__(self, txt_files, thread_count, batch_size, numcep, numcontext):
+    def __init__(self, txt_files, thread_count, batch_size, numcep):
         self._numcep = numcep
-        self._x = tf.placeholder(tf.float32, [None, numcep + (2 * numcep * numcontext)])
+        self._x = tf.placeholder(tf.float32, [None, numcep])
         self._x_length = tf.placeholder(tf.int32, [])
         self._y = tf.placeholder(tf.int32, [None,])
         self._y_length = tf.placeholder(tf.int32, [])
-        self._example_queue = tf.PaddingFIFOQueue(shapes=[[None, numcep + (2 * numcep * numcontext)], [], [None,], []],
+        self._example_queue = tf.PaddingFIFOQueue(shapes=[[None, numcep], [], [None,], []],
                                                   dtypes=[tf.float32, tf.int32, tf.int32, tf.int32],
                                                   capacity=2 * self._get_device_count() * batch_size)
         self._enqueue_op = self._example_queue.enqueue([self._x, self._x_length, self._y, self._y_length])
         self._txt_files = txt_files
         self._batch_size = batch_size
-        self._numcontext = numcontext
         self._thread_count = thread_count
         self._files_circular_list = self._create_files_circular_list()
 
@@ -85,7 +84,7 @@ class DataSet(object):
 
     def _populate_batch_queue(self, session):
         for txt_file, wav_file in self._files_circular_list:
-            source = audiofile_to_input_vector(wav_file, self._numcep, self._numcontext)
+            source = audiofile_to_input_vector(wav_file, self._numcep)
             source_len = len(source)
             with codecs.open(txt_file, encoding="utf-8") as open_txt_file:
                 target = unicodedata.normalize("NFKD", open_txt_file.read()).encode("ascii", "ignore")
@@ -111,7 +110,7 @@ class DataSet(object):
         return int(ceil(float(len(self._txt_files)) /float(self._batch_size)))
 
 
-def read_data_sets(data_dir, train_batch_size, dev_batch_size, test_batch_size, numcep, numcontext, thread_count=8, limit_dev=0, limit_test=0, limit_train=0):
+def read_data_sets(data_dir, train_batch_size, dev_batch_size, test_batch_size, numcep, thread_count=8, limit_dev=0, limit_test=0, limit_train=0):
     # Check if we can convert FLAC with SoX before we start
     sox_help_out = subprocess.check_output(["sox", "-h"])
     if sox_help_out.find("flac") == -1:
@@ -187,13 +186,13 @@ def read_data_sets(data_dir, train_batch_size, dev_batch_size, test_batch_size, 
     _maybe_split_transcriptions(work_dir, "test-other", "test-other-wav")
 
     # Create train DataSet from all the train archives
-    train = _read_data_set(work_dir, "train-*-wav", thread_count, train_batch_size, numcep, numcontext, limit=limit_train)
+    train = _read_data_set(work_dir, "train-*-wav", thread_count, train_batch_size, numcep, limit=limit_train)
 
     # Create dev DataSet from all the dev archives
-    dev = _read_data_set(work_dir, "dev-*-wav", thread_count, dev_batch_size, numcep, numcontext, limit=limit_dev)
+    dev = _read_data_set(work_dir, "dev-*-wav", thread_count, dev_batch_size, numcep, limit=limit_dev)
 
     # Create test DataSet from all the test archives
-    test = _read_data_set(work_dir, "test-*-wav", thread_count, test_batch_size, numcep, numcontext, limit=limit_test)
+    test = _read_data_set(work_dir, "test-*-wav", thread_count, test_batch_size, numcep, limit=limit_test)
 
     # Return DataSets
     return DataSets(train, dev, test)
@@ -251,7 +250,7 @@ def _maybe_split_transcriptions(extracted_dir, data_set, dest_dir):
                         fout.write(line[first_space+1:].lower().strip("\n"))
             os.remove(trans_filename)
 
-def _read_data_set(work_dir, data_set, thread_count, batch_size, numcep, numcontext, limit=0):
+def _read_data_set(work_dir, data_set, thread_count, batch_size, numcep, limit=0):
     # Create data set dir
     dataset_dir = os.path.join(work_dir, data_set)
 
@@ -261,4 +260,4 @@ def _read_data_set(work_dir, data_set, thread_count, batch_size, numcep, numcont
         txt_files = txt_files[:limit]
 
     # Return DataSet
-    return DataSet(txt_files, thread_count, batch_size, numcep, numcontext)
+    return DataSet(txt_files, thread_count, batch_size, numcep)
