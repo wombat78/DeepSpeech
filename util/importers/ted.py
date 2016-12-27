@@ -6,19 +6,18 @@ import numpy as np
 import tensorflow as tf
 import unicodedata
 import codecs
+import pandas
 
 from os import path
 from os import rmdir
 from os import remove
 from glob import glob
 from math import ceil
-from Queue import Queue
 from os import makedirs
 from sox import Transformer
 from itertools import cycle
 from os.path import getsize
 from threading import Thread
-from Queue import PriorityQueue
 from util.stm import parse_stm_file
 from util.gpu import get_available_gpus
 from util.text import text_to_char_array, ctc_label_dense_to_sparse
@@ -50,7 +49,7 @@ class DataSets(object):
         return self._test
 
 class DataSet(object):
-    def __init__(self, txt_files, thread_count, batch_size, numcep, numcontext):
+    def __init__(self, filelist, thread_count, batch_size, numcep, numcontext):
         self._numcep = numcep
         self._x = tf.placeholder(tf.float32, [None, numcep + (2 * numcep * numcontext)])
         self._x_length = tf.placeholder(tf.int32, [])
@@ -60,7 +59,7 @@ class DataSet(object):
                                                   dtypes=[tf.float32, tf.int32, tf.int32, tf.int32],
                                                   capacity=2 * self._get_device_count() * batch_size)
         self._enqueue_op = self._example_queue.enqueue([self._x, self._x_length, self._y, self._y_length])
-        self._txt_files = txt_files
+        self._filelist = filelist
         self._batch_size = batch_size
         self._numcontext = numcontext
         self._thread_count = thread_count
@@ -78,26 +77,18 @@ class DataSet(object):
         return batch_threads
 
     def _create_files_circular_list(self):
-        priorityQueue = PriorityQueue()
-        for txt_file in self._txt_files:
-          stm_dir = path.sep + "stm" + path.sep
-          wav_dir = path.sep + "wav" + path.sep
-          wav_file = path.splitext(txt_file.replace(stm_dir, wav_dir))[0] + ".wav"
-          wav_file_size = getsize(wav_file)
-          priorityQueue.put((wav_file_size, (txt_file, wav_file)))
-        files_list = []
-        while not priorityQueue.empty():
-            priority, (txt_file, wav_file) = priorityQueue.get()
-            files_list.append((txt_file, wav_file))
-        return cycle(files_list)
+        # 1. Sort by wav filesize
+        # 2. Select just wav filename and transcript columns
+        # 3. Create a cycle
+        return cycle(self._filelist.sort_values(by="wav_filesize")
+                                   .ix[:, ["wav_filename", "transcript"]]
+                                   .itertuples(index=False))
 
     def _populate_batch_queue(self, session):
-        for txt_file, wav_file in self._files_circular_list:
+        for wav_file, transcript in self._files_circular_list:
             source = audiofile_to_input_vector(wav_file, self._numcep, self._numcontext)
             source_len = len(source)
-            with codecs.open(txt_file, encoding="utf-8") as open_txt_file:
-                target = unicodedata.normalize("NFKD", open_txt_file.read()).encode("ascii", "ignore")
-                target = text_to_char_array(target)
+            target = text_to_char_array(transcript)
             target_len = len(target)
             try:
                 session.run(self._enqueue_op, feed_dict={
@@ -115,37 +106,57 @@ class DataSet(object):
 
     @property
     def total_batches(self):
-        # Note: If len(_txt_files) % _batch_size != 0, this re-uses initial _txt_files
-        return int(ceil(float(len(self._txt_files)) /float(self._batch_size)))
+        # Note: If len(_filelist) % _batch_size != 0, this re-uses initial files
+        return int(ceil(float(len(self._filelist)) /float(self._batch_size)))
 
 
 def read_data_sets(data_dir, train_batch_size, dev_batch_size, test_batch_size, numcep, numcontext, thread_count=8, limit_dev=0, limit_test=0, limit_train=0):
-    # Conditionally download data
-    TED_DATA = "TEDLIUM_release2.tar.gz"
-    TED_DATA_URL = "http://www.openslr.org/resources/19/TEDLIUM_release2.tar.gz"
-    local_file = base.maybe_download(TED_DATA, data_dir, TED_DATA_URL)
+    # Read the processed set files from disk if they exist, otherwise create
+    # them.
+    train_files = None
+    train_csv = os.path.join(data_dir, "ted-train.csv")
+    if gfile.Exists(train_csv):
+        train_files = pandas.read_csv(train_csv)
 
-    # Conditionally extract TED data
-    TED_DIR = "TEDLIUM_release2"
-    _maybe_extract(data_dir, TED_DIR, local_file)
+    dev_files = None
+    dev_csv = os.path.join(data_dir, "ted-dev.csv")
+    if gfile.Exists(dev_csv):
+        dev_files = pandas.read_csv(dev_csv)
 
-    # Conditionally convert TED sph data to wav
-    _maybe_convert_wav(data_dir, TED_DIR)
+    test_files = None
+    test_csv = os.path.join(data_dir, "ted-test.csv")
+    if gfile.Exists(test_csv):
+        test_files = pandas.read_csv(test_csv)
 
-    # Conditionally split TED wav data
-    _maybe_split_wav(data_dir, TED_DIR)
+    if train_files is None or dev_files is None or test_files is None:
+        # Conditionally download data
+        TED_DATA = "TEDLIUM_release2.tar.gz"
+        TED_DATA_URL = "http://www.openslr.org/resources/19/TEDLIUM_release2.tar.gz"
+        local_file = base.maybe_download(TED_DATA, data_dir, TED_DATA_URL)
 
-    # Conditionally split TED stm data
-    _maybe_split_stm(data_dir, TED_DIR)
+        # Conditionally extract TED data
+        TED_DIR = "TEDLIUM_release2"
+        _maybe_extract(data_dir, TED_DIR, local_file)
+
+        # Conditionally convert TED sph data to wav
+        _maybe_convert_wav(data_dir, TED_DIR)
+
+        # Split TED audio and transcription files into individual utterances
+        train_filelist, dev_filelist, test_filelist = _split_wav_and_stm(data_dir, TED_DIR)
+
+        # Write sets to disk as CSV files
+        train_filelist.to_csv(train_csv, index=False)
+        dev_filelist.to_csv(dev_csv, index=False)
+        test_filelist.to_csv(test_csv, index=False)
 
     # Create dev DataSet
-    dev = _read_data_set(data_dir, TED_DIR, "dev", thread_count, dev_batch_size, numcep, numcontext, limit=limit_dev)
+    dev = _create_data_set(dev_filelist, thread_count, dev_batch_size, numcep, numcontext, limit=limit_dev)
 
     # Create test DataSet
-    test = _read_data_set(data_dir, TED_DIR, "test", thread_count, test_batch_size, numcep, numcontext, limit=limit_test)
+    test = _create_data_set(test_filelist, thread_count, test_batch_size, numcep, numcontext, limit=limit_test)
 
     # Create train DataSet
-    train = _read_data_set(data_dir, TED_DIR, "train", thread_count, train_batch_size, numcep, numcontext, limit=limit_train)
+    train = _create_data_set(train_filelist, thread_count, train_batch_size, numcep, numcontext, limit=limit_train)
 
     # Return DataSets
     return DataSets(train, dev, test)
@@ -193,53 +204,65 @@ def _maybe_convert_wav_dataset(extracted_dir, data_set):
         # Remove source_dir
         rmdir(source_dir)
 
-def _maybe_split_wav(data_dir, extracted_data):
+def _split_wav_and_stm(data_dir, extracted_data):
     # Create extracted_data dir
     extracted_dir = path.join(data_dir, extracted_data)
 
-    # Conditionally split dev wav
-    _maybe_split_wav_dataset(extracted_dir, "dev")
+    # Conditionally split dev data
+    dev_files = _split_wav_stm_dataset(extracted_dir, "dev")
 
-    # Conditionally split train wav
-    _maybe_split_wav_dataset(extracted_dir, "train")
+    # Conditionally split train data
+    train_files = _split_wav_stm_dataset(extracted_dir, "train")
 
-    # Conditionally split test wav
-    _maybe_split_wav_dataset(extracted_dir, "test")
+    # Conditionally split test data
+    test_files = _split_wav_stm_dataset(extracted_dir, "test")
 
-def _maybe_split_wav_dataset(extracted_dir, data_set):
+    return train_filelist, dev_filelist, test_filelist
+
+def _split_wav_stm_dataset(extracted_dir, data_set):
     # Create stm dir
     stm_dir = path.join(extracted_dir, data_set, "stm")
 
     # Create wav dir
     wav_dir = path.join(extracted_dir, data_set, "wav")
 
-    # Loop over stm files and split corresponding wav
-    for stm_file in glob(path.join(stm_dir, "*.stm")):
+    # Obtain stm files
+    stm_files = glob(path.join(stm_dir, "*.stm"))
+
+    files = []
+
+    # Loop over stm files and split each one
+    for stm_file in stm_files:
         # Parse stm file
         stm_segments = parse_stm_file(stm_file)
 
         # Open wav corresponding to stm_file
         wav_filename = path.splitext(path.basename(stm_file))[0] + ".wav"
         wav_file = path.join(wav_dir, wav_filename)
-        origAudio = wave.open(wav_file,'r')
+        origAudio = wave.open(wav_file, "r")
 
-        # Loop over stm_segments and split wav_file for each segment
+        # Loop over stm_segments and create txt file for each one
         for stm_segment in stm_segments:
             # Create wav segment filename
             start_time = stm_segment.start_time
             stop_time = stm_segment.stop_time
-            new_wav_filename = path.splitext(path.basename(stm_file))[0] + "-" + str(start_time) + "-" + str(stop_time) + ".wav"
-            new_wav_file = path.join(wav_dir, new_wav_filename)
+            new_wav_filename = path.splitext(path.basename(stm_file))[0] + "-" + str(start_time) + "-" + str(stop_time) + ".txt"
+            new_wav_file = path.abspath(path.join(wav_dir, new_wav_filename))
+
+            transcript = codecs.decode(stm_segment.transcript, encoding="utf-8")
+            transcript = unicodedata.normalize("NFKD", transcript).encode("ascii", "ignore")
 
             # If the wav segment filename does not exist create it
             if not gfile.Exists(new_wav_file):
                 _split_wav(origAudio, start_time, stop_time, new_wav_file)
 
+            new_wav_filesize = getsize(new_wav_file)
+            files.append((new_wav_file, new_wav_filesize, transcript))
+
         # Close origAudio
         origAudio.close()
 
-        # Remove wav_file
-        remove(wav_file)
+    return pandas.DataFrame(data=files, columns=["wav_filename", "wav_filesize", "transcript"])
 
 def _split_wav(origAudio, start_time, stop_time, new_wav_file):
     frameRate = origAudio.getframerate()
@@ -252,54 +275,10 @@ def _split_wav(origAudio, start_time, stop_time, new_wav_file):
     chunkAudio.writeframes(chunkData)
     chunkAudio.close()
 
-def _maybe_split_stm(data_dir, extracted_data):
-    # Create extracted_data dir
-    extracted_dir = path.join(data_dir, extracted_data)
-
-    # Conditionally split dev stm
-    _maybe_split_stm_dataset(extracted_dir, "dev")
-
-    # Conditionally split train stm
-    _maybe_split_stm_dataset(extracted_dir, "train")
-
-    # Conditionally split test stm
-    _maybe_split_stm_dataset(extracted_dir, "test")
-
-def _maybe_split_stm_dataset(extracted_dir, data_set):
-    # Create stm dir
-    stm_dir = path.join(extracted_dir, data_set, "stm")
-
-    # Obtain stm files
-    stm_files = glob(path.join(stm_dir, "*.stm"))
-
-    # Loop over stm files and split each one
-    for stm_file in stm_files:
-        # Parse stm file
-        stm_segments = parse_stm_file(stm_file)
-
-        # Loop over stm_segments and create txt file for each one
-        for stm_segment in stm_segments:
-            start_time = stm_segment.start_time
-            stop_time = stm_segment.stop_time
-            txt_filename = path.splitext(path.basename(stm_file))[0] + "-" + str(start_time) + "-" + str(stop_time) + ".txt"
-            txt_file = path.join(stm_dir, txt_filename)
-
-            # If the txt segment file does not exist create it
-            if not gfile.Exists(txt_file):
-                with open(txt_file, "w+") as f:
-                  f.write(stm_segment.transcript)
-
-        # Remove stm_file
-        remove(stm_file)
-
-def _read_data_set(data_dir, extracted_data, data_set, thread_count, batch_size, numcep, numcontext, limit=0):
-    # Create stm dir
-    stm_dir = path.join(data_dir, extracted_data, data_set, "stm")
-
-    # Obtain list of txt files
-    txt_files = glob(path.join(stm_dir, "*.txt"))
+def _create_data_set(filelist, thread_count, batch_size, numcep, numcontext, limit=0):
+    # Optionally apply dataset size limit
     if limit > 0:
-        txt_files = txt_files[:limit]
+        filelist = filelist.iloc[:limit]
 
     # Return DataSet
-    return DataSet(txt_files, thread_count, batch_size, numcep, numcontext)
+    return DataSet(filelist, thread_count, batch_size, numcep, numcontext)
