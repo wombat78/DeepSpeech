@@ -245,15 +245,15 @@ def BiRNN(batch_x, seq_length, dropout, is_training):
         batch_x_shape = tf.shape(batch_x)
 
         # First 1d convolution layer, made of 1024 filters which are 11 frames wide
-        filters_1 = variable_on_cpu("w1", [11, n_input + 2*n_input*n_context, 1024], tf.contrib.layers.xavier_initializer())
+        filters_1 = variable_on_cpu("w1", [11, n_input, 1124], tf.contrib.layers.xavier_initializer())
         layer_1 = tf.nn.conv1d(batch_x, filters_1, stride=2, padding="SAME")
 
         # Batch normalization
         output = tf.contrib.layers.batch_norm(inputs=layer_1, decay=0.9, is_training=is_training)
 
         # Three layers of GRU cells with 1024 nodes each
-        cell = BNGRUCell(1024, is_training, max_bn_steps=102, decay=0.9)
-        multi_cell = tf.contrib.rnn.MultiRNNCell([cell] * 3)
+        cell = BNGRUCell(1124, is_training, max_bn_steps=102, decay=0.9)
+        multi_cell = tf.contrib.rnn.MultiRNNCell([cell] * 5)
         rnn_outputs, _ = tf.nn.dynamic_rnn(multi_cell, output, sequence_length=seq_length, dtype=tf.float32)
 
         # A final fully connected layer with linear activation
@@ -1114,7 +1114,7 @@ if __name__ == "__main__":
             # Run inference
 
             # Input tensor will be of shape [batch_size, n_steps, n_input + 2*n_input*n_context]
-            input_tensor = tf.placeholder(tf.float32, [None, None, n_input + 2*n_input*n_context], name='input_node')
+            input_tensor = tf.placeholder(tf.float32, [None, None, n_input], name='input_node')
 
             # Calculate input sequence length. This is done by tiling n_steps, batch_size times.
             # If there are multiple sequences, it is assumed they are padded with zeros to be of

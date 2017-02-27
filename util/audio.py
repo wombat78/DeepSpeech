@@ -16,6 +16,9 @@ def audiofile_to_input_vector(audio_filename, numcep, numcontext):
     # Get mfcc coefficients
     orig_inputs = mfcc(audio, samplerate=fs, numcep=numcep)
 
+    # Short circuit the rest of the processing since DS2 doesn't need it
+    return orig_inputs
+
     # We only keep every second feature (BiRNN stride = 2)
     orig_inputs = orig_inputs[::2]
 
