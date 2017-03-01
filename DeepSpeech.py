@@ -251,8 +251,11 @@ def BiRNN(batch_x, seq_length, dropout, is_training):
         # Batch normalization
         output = tf.contrib.layers.batch_norm(inputs=layer_1, decay=0.9, is_training=is_training)
 
+        # Store individual statistics for a max of 10 seconds worth of time steps
+        # 10 seconds * (1/0.01) time steps per second = 1000 time steps
+        max_bn_steps = 1000
         # Three layers of GRU cells with 1024 nodes each
-        cell = BNGRUCell(1124, is_training, max_bn_steps=102, decay=0.9)
+        cell = BNGRUCell(1124, is_training, max_bn_steps=max_bn_steps, decay=0.9)
         multi_cell = tf.contrib.rnn.MultiRNNCell([cell] * 5)
         rnn_outputs, _ = tf.nn.dynamic_rnn(multi_cell, output, sequence_length=seq_length, dtype=tf.float32)
 
