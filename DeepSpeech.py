@@ -15,6 +15,7 @@ import subprocess
 import tensorflow as tf
 import time
 import inspect
+import multiprocessing
 
 from six.moves import zip, range, filter, urllib, BaseHTTPServer
 from tensorflow.contrib.session_bundle import exporter
@@ -694,18 +695,32 @@ def calculate_report(results_tuple):
     It'll compute the `mean` WER and create ``Sample`` objects of the ``report_count`` top lowest
     loss items from the provided WER results tuple (only items with WER!=0 and ordered by their WER).
     '''
-    samples = []
     items = list(zip(*results_tuple))
-    mean_wer = 0.0
-    for label, decoding, distance, loss in items:
-        corrected = correction(decoding)
-        sample_wer = wer(label, corrected)
-        sample = Sample(label, corrected, loss, distance, sample_wer)
-        samples.append(sample)
-        mean_wer += sample_wer
+    cpu_count = multiprocessing.cpu_count()
+    threads_items = [items[cpu::cpu_count] for cpu in range(cpu_count) ]
+    samples = []
+    sample_wers = []
+    def calculate_thread_report(thread_items):
+        for label, decoding, distance, loss in thread_items:
+            corrected = correction(decoding)
+            sample_wer = wer(label, corrected)
+            sample = Sample(label, corrected, loss, distance, sample_wer)
+            samples.append(sample)
+            sample_wers.append(sample_wer)
+
+    # Create threads to calculate report
+    report_threads = [Thread(target=calculate_thread_report, args=(thread_items,)) for thread_items in threads_items]
+
+    # Start threads calculating report
+    for report_thread in report_threads:
+        report_thread.start()
+
+    # Wait until report has been calculated
+    for report_thread in report_threads:
+        report_thread.join()
 
     # Getting the mean WER from the accumulated one
-    mean_wer = mean_wer / len(items)
+    mean_wer = sum(sample_wers) / len(items)
 
     # Filter out all items with WER=0
     samples = [s for s in samples if s.wer > 0]

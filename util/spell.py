@@ -1,11 +1,12 @@
 from __future__ import absolute_import
 import re
 import kenlm
+import multiprocessing
 from heapq import heapify
 from six.moves import range
 
 # Define beam with for alt sentence search
-BEAM_WIDTH = 1024
+BEAM_WIDTH = 2048 / multiprocessing.cpu_count()
 MODEL = None
 
 # Lazy-load language model (TED corpus, Kneser-Ney, 4-gram, 30k word LM)
