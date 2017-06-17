@@ -24,8 +24,8 @@ def text_to_char_array(original):
     # Tokenize words into letters adding in SPACE_TOKEN where required
     result = np.hstack([SPACE_TOKEN if xt == '' else list(xt) for xt in result])
 
-    # Map characters into indicies
-    result = np.asarray([SPACE_INDEX if xt == SPACE_TOKEN else ord(xt) - FIRST_INDEX for xt in result])
+    # Map characters into indicies - fix to handle upper case letter tokens
+    result = np.asarray([SPACE_INDEX if xt == SPACE_TOKEN else ord(xt.lower()) - FIRST_INDEX for xt in result])
 
     # Add result to results
     return result
