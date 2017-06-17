@@ -43,14 +43,15 @@ class DataSet(object):
     def __init__(self, files_list, thread_count, batch_size, numcep, numcontext, next_index=lambda x: x + 1):
         self._coord = None
         self._numcep = numcep
+        self._uttid = tf.placeholder(tf.string, [])
         self._x = tf.placeholder(tf.float32, [None, numcep + (2 * numcep * numcontext)])
         self._x_length = tf.placeholder(tf.int32, [])
         self._y = tf.placeholder(tf.int32, [None,])
         self._y_length = tf.placeholder(tf.int32, [])
-        self.example_queue = tf.PaddingFIFOQueue(shapes=[[None, numcep + (2 * numcep * numcontext)], [], [None,], []],
-                                                  dtypes=[tf.float32, tf.int32, tf.int32, tf.int32],
+        self.example_queue = tf.PaddingFIFOQueue(shapes=[[],[None, numcep + (2 * numcep * numcontext)], [], [None,], [] ],
+                                                  dtypes=[tf.string, tf.float32, tf.int32, tf.int32, tf.int32 ],
                                                   capacity=2 * self._get_device_count() * batch_size)
-        self._enqueue_op = self.example_queue.enqueue([self._x, self._x_length, self._y, self._y_length])
+        self._enqueue_op = self.example_queue.enqueue([self._uttid, self._x, self._x_length, self._y, self._y_length])
         self._close_op = self.example_queue.close(cancel_pending_enqueues=True)
         self.batch_size = batch_size
         self._numcontext = numcontext
@@ -96,6 +97,7 @@ class DataSet(object):
             target_len = len(target)
             try:
                 session.run(self._enqueue_op, feed_dict={
+                    self._uttid: wav_file,
                     self._x: source,
                     self._x_length: source_len,
                     self._y: target,
@@ -104,9 +106,9 @@ class DataSet(object):
                 return
 
     def next_batch(self):
-        source, source_lengths, target, target_lengths = self.example_queue.dequeue_many(self.batch_size)
+        uttids, source, source_lengths, target, target_lengths = self.example_queue.dequeue_many(self.batch_size)
         sparse_labels = ctc_label_dense_to_sparse(target, target_lengths, self.batch_size)
-        return source, source_lengths, sparse_labels
+        return uttids, source, source_lengths, sparse_labels
 
     @property
     def total_batches(self):
@@ -146,9 +148,9 @@ class SwitchableDataSet(object):
         session.run(self._close_op, feed_dict={ self._queue_selector: 0 })
 
     def next_batch(self):
-        source, source_lengths, target, target_lengths = self._queue.dequeue_many(self._data_set.batch_size)
+        uttids, source, source_lengths, target, target_lengths = self._queue.dequeue_many(self._data_set.batch_size)
         sparse_labels = ctc_label_dense_to_sparse(target, target_lengths, self._data_set.batch_size)
-        return source, source_lengths, sparse_labels
+        return uttids, source, source_lengths, sparse_labels
 
 def read_data_sets(train_csvs, dev_csvs, test_csvs,
                    train_batch_size, dev_batch_size, test_batch_size,

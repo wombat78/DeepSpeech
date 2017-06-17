@@ -450,7 +450,7 @@ def calculate_mean_edit_distance_and_loss(batch_set, dropout):
     the decoded result and the batch's original Y.
     '''
     # Obtain the next batch of data
-    batch_x, batch_seq_len, batch_y = batch_set.next_batch()
+    batch_uttid, batch_x, batch_seq_len, batch_y = batch_set.next_batch()
 
     # Calculate the logits of the batch using BiRNN
     logits = BiRNN(batch_x, tf.to_int64(batch_seq_len), dropout)
@@ -480,7 +480,7 @@ def calculate_mean_edit_distance_and_loss(batch_set, dropout):
     # - the recognition mean edit distance,
     # - the decoded batch and
     # - the original batch_y (which contains the verified transcriptions).
-    return total_loss, avg_loss, distance, mean_edit_distance, decoded, batch_y
+    return batch_uttid, total_loss, avg_loss, distance, mean_edit_distance, decoded, batch_y
 
 
 # Adam Optimization
@@ -571,7 +571,7 @@ def get_tower_results(batch_set, optimizer):
                 with tf.name_scope('tower_%d' % i) as scope:
                     # Calculate the avg_loss and mean_edit_distance and retrieve the decoded
                     # batch along with the original batch's labels (Y) of this tower
-                    total_loss, avg_loss, distance, mean_edit_distance, decoded, labels = \
+                    uttids, total_loss, avg_loss, distance, mean_edit_distance, decoded, labels = \
                         calculate_mean_edit_distance_and_loss(batch_set, no_dropout if optimizer is None else dropout_rates)
 
                     # Allow for variables to be re-used by the next tower
